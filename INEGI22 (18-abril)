@@ -1,0 +1,285 @@
+#------------Este programa permite realizar las mediciones de una red de sensores  previamente configurados, de tipo -------------
+#----------PM(1.0,2.5,4.0 y 10.0), COV's, T/HR, CO2, haciendo uso de su comunicación por el puerto I2C de la Raspberry Pi 4-------
+#--------- modelo B, y con una configuración predefinida,con 5.0V en Vcc y resistencias pull-up de 10K para la red de sensores,---
+#-----asi como las rutinas para el accionamiento de ventidaores que permitan la inyección y extración de las muestras como los ---
+#-accionamiento de los indicadores de operación y muestreo,realizando el muestreo cada minuto y enviando el promedio cada 10min.-- 
+#----------Ello como parte del proyecto entre el IPICyT y el INEGI a través del proyecto B-S-72302 (FS-INEGI-CONACYT),------------
+#---por parte del ING. J.Ricardo Jiménez M.(https://github.com/JRickMaster). La finalidad de éste programa consiste en recabar ---
+#-------------la información principalmente de PM2.5, PM10 y COV's para ser enviarda a un servidor propiedad del IPCyT------------
+
+#-------Esta programación corresponde a las réplicas en serie de la IPIestación V3.1 implementado el 11/marzo/2022, bajo la ------
+#-------------------estructura para el envio de datos mediante el formato json en un protocolo client/server----------------------
+
+########################################-------SERIE------IPIestación-001-------SERIE------#######################################
+# #!/usr/bin/env python
+# coding=utf-8
+
+id=0x01
+
+import time                                                         #Módulo del tiempo
+from time import sleep
+from datetime import datetime
+import RPi.GPIO as GPIO
+import sps30                                                        #Módulo propio del Sensor
+from sps30 import SPS30
+import busio                                                        #Módulo de la familia adafruit SVM30
+import adafruit_sgp30                                               #Módulo del sensor SGP30
+import board                                                        #Módulo del SCD30
+import adafruit_scd30
+from adafruit_bus_device.i2c_device import I2CDevice 
+import requests
+import numpy
+from gpiozero import RGBLED, LED                                    #Módulo del LED RGB
+import json
+
+#sps = SPS30(1)
+
+#i2c = board.I2C()   # uses board.SCL and board.SDA
+#scd = adafruit_scd30.SCD30(i2c)
+
+GPIO.setwarnings(False)
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(15, GPIO.OUT, initial= GPIO.LOW)                         #Indicador R
+GPIO.setup(14, GPIO.OUT, initial= GPIO.LOW)                         #Indicador G
+GPIO.setup(18, GPIO.OUT, initial= GPIO.LOW)                         #Indicador B
+
+GPIO.setup(10, GPIO.OUT, initial= GPIO.LOW)                         #Indicador de falla
+issue = LED(10)
+                    
+GPIO.setup(23, GPIO.OUT, initial= GPIO.LOW)                         #Inyector de aire
+GPIO.setup(24, GPIO.OUT, initial= GPIO.LOW)                         #Extractor de aire
+
+led = RGBLED(red=15, green=14, blue=18)                             #Se definen los GPIO del RGB
+
+url = 'http://youilab.ipicyt.edu.mx/scripts/requests.php'           #Direccion del request
+#url = 'http://youilab.ipicyt.edu.mx:8080/sensky/api/v1/ipiestacion'
+
+#sps.start_measurement()
+
+pb1=[]                                                              #Se declaran las listas de datos
+pb2=[]
+pb3=[]
+pb4=[]
+pb5=[]
+pb6=[]
+pb7=[]
+pb75=[]
+pb8=[]
+pb9=[]
+pb10=[]
+                                                                    #Se declara una Función para determinal el estado de operación
+                                                                    #del led indicador RGB
+def ICA_Index():
+    #NORMA DE COLORES
+  if PM10p0 > 200 or co2 > 1000:
+    led.color = (0.639, 0.247, 0.670)  # morado 1/255*(163,63,171)
+    #sleep(1)
+    # led.color = (0.490, 0.129, 0.506)  # morado 1/255*(125,33,129)
+    # sleep(1)
+  elif 150 <= PM10p0 < 200 or 850 < co2 <= 1000:
+    led.color = (1, 0, 0)  	            # rojo		1/255*(255,0,0)
+    #sleep(1)
+  elif 100 <= PM10p0 < 150 or 650 < co2 <= 850:
+    led.color = (1, 0.5, 0) 	            # naranja	1/255*(255,126,0)
+    #sleep(1)
+    # led.color = (0.957, 0.275, 0.067) 	# naranja	1/255*(244,70,17)
+    # sleep(1)
+  elif 50 <= PM10p0 < 100 or 450 < co2 <= 650:
+    #led.color = (1, 1, 0)  	    # amarillo	1/255*(255,255,0)
+    sleep(1)
+    # led.color = (1, 0.913, 0)  	# amarillo	1/255*(255,233,0)
+    # sleep(1)
+  elif PM10p0 <= 50 or co2 <= 450:
+    led.color = (0, 1, 0)  	# verde		1/255*(0,255,0)
+    #sleep(1) 
+	
+    # #PROPUESTOS
+    # led.color = (0, 0, 0)  	# apagado
+    # sleep(0.5)
+
+
+
+while True:                                                         #Inicia la secuencia de lectura en bucle
+#Dada la configuración de operación se crea una excepción de lectura entre mediciones entre cada lectura pero informando del 
+#error en terminal, ello a traves del try/except.
+    epoch = time.asctime( time.localtime(time.time()))
+    try:
+                                                                    ###### Arranque del ventilador de Inyección______
+        GPIO.output(23,True)
+        sleep(8)
+
+                        ###############   SPS30    ##########
+        try:
+            d_1 = int(round(time.time() * 1000)-1.8e7)
+            
+    
+            if sps.read_measured_values() == sps.MEASURED_VALUES_ERROR:     #Medida de seguridad en caso de  
+                continue                                                    #error de medición
+                raise Exception("MEASURED VALUES CRC ERROR!")               
+    
+            PM1p0 = (sps.dict_values['pm1p0'])
+            PM2p5 = (sps.dict_values['pm2p5'])
+            PM4p0 = (sps.dict_values['pm4p0'])
+            PM10p0 = (sps.dict_values['pm10p0'])
+        except:
+            sps = SPS30(1)
+            sps.start_measurement()
+            
+            PM1p0 = 0.1
+            PM2p5 = 0.1
+            PM4p0 = 0.1
+            PM10p0 = 0.1
+            issue.blink()
+
+                        ############       SCC30-DB        ##########
+        try:
+            d_2 = int(round(time.time() * 1000)-1.8e7)
+
+            bus = smbus.SMBus(1)
+            bus.write_i2c_block_data(0x44, 0x2C, [0x06])
+  
+            data = bus.read_i2c_block_data(0x44, 0x00, 6)
+
+            cTemp = ((((data[0] * 256.0) + data[1]) * 175) / 65535.0) - 45
+            humidity = 100 * (data[3] * 256 + data[4]) / 65535.0
+        except:
+            cTemp = 0.1
+            humidity = 0.1
+            issue.blink()
+
+                        #############      SVM30       ##########
+        try:
+            d_3 = int(round(time.time() * 1000)-1.8e7)
+            #sgp30.raw_measure()
+            eCO2, TVOC = sgp30.iaq_measure()
+            #device = I2CDevice(i2c,0x70) 
+        
+            
+            #covs=sgp30.TVOC                                            #Sin ecuación de corrección
+        except:
+            i2c = busio.I2C(board.SCL, board.SDA)
+            sgp30 = adafruit_sgp30.Adafruit_SGP30(i2c)
+            eCO2 = 0.1
+            VOC = 0.1
+            
+            #sgp30.iaq_init()
+            #eCO2,TVOC=sgp30.iaq_measure()
+            #sgp30.raw_measure()
+            
+            issue.blink()
+
+
+                        #############       SCD30       ########
+        try:
+            d_4 = int(round(time.time() * 1000)-1.8e7)
+            i2c = board.I2C()   # uses board.SCL and board.SDA
+            scd = adafruit_scd30.SCD30(i2c)
+            
+            if scd.data_available:
+
+                co2=scd.CO2
+                co2cTemp=scd.temperature
+                co2humidity=scd.relative_humidity
+
+        except:
+            co2 = 0.1
+            co2cTemp = 0.1
+            co2humidity = 0.1
+            issue.blink()
+                                                                        ###### Apagado del ventilador de Inyección______
+        GPIO.output(23,False)
+
+        if len(pb10) < 10:
+			
+            pb1.append(PM1p0)
+            pb2.append(PM2p5)
+            pb3.append(PM4p0)
+            pb4.append(PM10p0)
+            
+            pb5.append(cTemp)
+            pb6.append(humidity)
+
+            pb7.append(TVOC)
+            pb75.append(eCO2)
+
+            pb8.append(co2)
+            pb9.append(co2cTemp)
+            pb10.append(co2humidity)
+            
+            dic_out_1 = {
+				 "Sensor":("SPS30",id),                                           
+				 "PM1.0(ug/m3)" : "%.2f" % numpy.mean(pb1),       
+				 "PM2.5(ug/m3)" : "%.2f" % numpy.mean(pb2),       
+				 "PM4.0(ug/m3)" : "%.2f" % numpy.mean(pb3),
+				 "PM10.0(ug/m3)" : "%.2f" % numpy.mean(pb4),
+				 "Tiempo": d_1
+				 }
+
+            dic_out_2 = {
+                "Sensor": ("SCC30-DB",id),
+                "Temp_C": "%.2f" % numpy.mean(pb5),
+                "HR_%": "%.2f" % numpy.mean(pb6),
+                "Tiempo": d_2
+                }
+
+            dic_out_3 = {
+                "Sensor": ("SVM30",id),
+                "TCOV(PPB)": "%.2f" % numpy.mean(pb7),
+                "Tiempo": d_3
+                }
+
+            dic_out_4 = {
+                "Sensor": ("SCD30",id),
+                "CO2(ppm)" : "%.2f" % numpy.mean(pb8),
+                "Temp_C": "%.2f" % numpy.mean(pb9),
+                "HR_%": "%.2f" % numpy.mean(pb10),
+                "Tiempo": d_4
+                }
+        
+        end=[dic_out_1,dic_out_2,dic_out_3,dic_out_4]
+        print(epoch,end)
+
+        if len(pb10) == 10:
+                   
+            data = {
+                "data": [
+                json.dumps(end)
+                ]
+            }
+            
+            r = requests.post(url, data=data)
+
+            pb1.clear()
+            pb2.clear()
+            pb3.clear()
+            pb4.clear()
+            pb5.clear()
+            pb6.clear()
+            pb7.clear()
+            pb75.clear()
+            pb8.clear()
+            pb9.clear()
+            pb10.clear()
+
+            print (r.text)
+
+                                            #######-----------Indicación del ICA---------#######   
+
+        ICA_Index()
+        sleep(29)
+    
+                                            ###### Arranque del ventilador de Extracción______
+        GPIO.output(24,True)
+        sleep(20)
+        GPIO.output(24,False)
+
+
+    except:
+        print("Fállo en la interface a las ",epoch," reintentando...")
+        led.color = (0.490, 0.129, 0.506)   # Morado 1/255*(125,33,129)
+        led.blink()
+        issue.blink()
+        sleep(5)
+        led.color = (0, 0, 0)  	            # Apagado
+        continue
+    #continue
